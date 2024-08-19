@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="../static/css/loginstyle.css">
+    <title>Login to Chat</title>
+</head>
+<body>
+    <h1>Join Chat Room</h1>
+    <form id="loginForm" action="/chat">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required><br><br>
+
+        <label for="roomSelect">Select a Room</label>
+        <select id="roomSelect" name="room">
+            <!-- Available rooms will be populated here -->
+        </select>
+        <br><br>
+        <label for="newRoom">Enter a New Room</label>
+        <input type="text" id="newRoom" name="newRoom"><br><br>
+
+        <button type="submit">Enter Chat Room</button>
+    </form>
+
+    <script>
+        // Fetch available rooms and populate the dropdown
+        fetch('/rooms')
+            .then(response => response.json())
+            .then(rooms => {
+                const roomSelect = document.getElementById('roomSelect');
+                rooms.forEach(room => {
+                    const option = document.createElement('option');
+                    option.value = room;
+                    option.textContent = room;
+                    roomSelect.appendChild(option);
+                });
+            });
+
+        document.getElementById('loginForm').addEventListener('submit', function(event) {
+            const username = document.getElementById('username').value;
+            const selectedRoom = document.getElementById('roomSelect').value;
+            const newRoom = document.getElementById('newRoom').value.trim();
+            const room = newRoom !== '' ? newRoom : selectedRoom;
+
+            // Save username and room in localStorage
+            localStorage.setItem('username', username);
+            localStorage.setItem('room', room);
+        });
+    </script>
+</body>
+</html>

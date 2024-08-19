@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Chat App with Video and Whiteboard</title>
+  <link rel="stylesheet" href="../static/css/style.css">
+  <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.0/simplepeer.min.js"></script>
+  <style>
+    /* Existing styles */
+    #video-container {
+      display: flex;
+      flex-wrap: wrap;
+    }
+    video {
+      width: 300px;
+      height: auto;
+      margin: 10px;
+    }
+    #chat-container {
+      margin-top: 20px;
+    }
+    #chat-messages {
+      border: 1px solid #ccc;
+      height: 300px;
+      overflow-y: scroll;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    #chat-input {
+      width: calc(100% - 250px);
+      padding: 5px;
+    }
+    #send-message,
+    #leave-room,
+    #stop-video,
+    #clear-board,
+    #color-picker {
+      padding: 5px 10px;
+    }
+    #leave-room {
+      margin-left: 10px;
+    }
+    #start-video,
+    #stop-video {
+      margin: 20px;
+    }
+    #whiteboard {
+      border: 2px solid #ccc;
+      margin-top: 20px;
+      cursor: crosshair;
+      background: #fff;
+    }
+    #controls {
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Chat Application</h1>
+  <button id="start-video">Start Video</button>
+  <button id="stop-video" disabled>Stop Video</button>
+  <button id="leave-room">Leave Room</button>
+  <div id="video-container">
+    <!-- Local and remote videos will be added dynamically -->
+  </div>
+
+  <div id="chat-container">
+    <div id="chat-messages"></div>
+    <input type="text" id="chat-input" placeholder="Type a message" />
+    <button id="send-message">Send</button>
+  </div>
+
+  <canvas id="whiteboard" width="800" height="600"></canvas>
+
+  <div id="controls">
+    <button id="clear-board">Clear Board</button>
+    <input type="color" id="color-picker" value="#000000" />
+  </div>
+
+  <script>
+    // Initialize the SocketIO connection
+    const socket = io();
+    const videoContainer = document.getElementById("video-container");
+    const chatMessages = document.getElementById("chat-messages");
+    const chatInput = document.getElementById("chat-input");
+    const sendMessageButton = document.getElementById("send-message");
+    const leaveRoomButton = document.getElementById("leave-room");
+    const startVideoButton = document.getElementById("start-video");
+    const stopVideoButton = document.getElementById("stop-video");
+    const whiteboard = document.getElementById("whiteboard");
+    const ctx = whiteboard.getContext("2d");
+    const clearBoardButton = document.getElementById("clear-board");
+    const colorPicker = document.getElementById("color-picker");
+    const username = localStorage.getItem("username");
+    const room = localStorage.getItem("room");
+
+    if (!username || !room) {
+      alert("Username and room are required!");
+      window.location.href = "login.html";
+    }
+
+    let localStream;
+    let peers = {};
+    let drawing = false;
+    let currentColor = "#000000";
+
+    function joinRoom() {
+      socket.emit("join", { username, room });
+    }
+
+    function startVideo() {
+      navigator.mediaDevices
+        .getUserMedia({ video: true, audio: true })
+        .then((stream) => {
+          localStream = stream;
+
+          const localVideo = document.createElement("video");
+          localVideo.srcObject = stream;
+          localVideo.autoplay = true;
+          localVideo.muted = true;
+          localVideo.id = "local-video";
+          videoContainer.appendChild(localVideo);
+
+          socket.emit("ready-for-video", { username, room });
+
+          socket.on("peer-id", (data) => handlePeerId(data));
+          socket.on("video-signal", (data) => handleVideoSignal(data));
+          socket.on("user-stopped-video", (data) =>
+            handleUserStoppedVideo(data)
+          );
+        })
+        .catch((err) => {
+          console.error("Error accessing media devices.", err);
+        });
+
+      startVideoButton.disabled = true;
+      stopVideoButton.disabled = false;
+    }
+
+    function stopVideo() {
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+      const localVideo = document.getElementById("local-video");
+      if (localVideo) localVideo.remove();
+
+      socket.emit("stop-video", { username, room });
+
+      startVideoButton.disabled = false;
+      stopVideoButton.disabled = true;
+    }
+
+    function leaveRoom() {
+      if (localStream) {
+        stopVideo(); // Stop the video before leaving
+      }
+      socket.emit("leave", { username, room });
+      window.location.href = "login.html";
+    }
+
+    startVideoButton.addEventListener("click", () => {
+      // Redirect to temp.html before starting video
+      window.location.href = "temp.html";
+    });
+
+    stopVideoButton.addEventListener("click", stopVideo);
+    leaveRoomButton.addEventListener("click", leaveRoom);
+
+    // Handle rejoining when index.html is loaded
+    window.addEventListener("load", () => {
+      joinRoom();
+      if (startVideoButton.disabled === false) {
+        startVideo();
+      }
+    });
+
+    sendMessageButton.addEventListener("click", sendMessage);
+    chatInput.addEventListener("keypress", (event) => {
+      if (event.key === "Enter") sendMessage();
+    });
+
+    function sendMessage() {
+      const message = chatInput.value.trim();
+      if (message !== "") {
+        const timestamp = new Date()
+          .toISOString()
+          .replace("T", " ")
+          .substring(0, 19);
+        addMessageToChat(username, message, timestamp, true);
+        socket.emit("send-message", { username, message, room, timestamp });
+        chatInput.value = "";
+      }
+    }
+
+    function addMessageToChat(username, message, timestamp, isSelf = false) {
+      const messageElement = document.createElement("div");
+      messageElement.textContent = `[${timestamp}] ${username}: ${message}`;
+      if (isSelf) messageElement.style.fontWeight = "bold"; // Highlight self message
+      chatMessages.appendChild(messageElement);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    socket.on("receive-message", (data) => {
+      if (data.username !== username) {
+        addMessageToChat(data.username, data.message, data.timestamp);
+      }
+    });
+
+    socket.on("status", (data) => {
+      addMessageToChat("System", data.message, data.timestamp);
+    });
+
+    function handlePeerId({ peerId }) {
+      const peer = new SimplePeer({
+        initiator: true,
+        trickle: false,
+        stream: localStream,
+      });
+
+      peer.on("signal", (signal) => {
+        socket.emit("video-signal", { signal, peerId });
+      });
+
+      peer.on("stream", (stream) => {
+        addRemoteVideo(peerId, stream);
+      });
+
+      peers[peerId] = peer;
+    }
+
+    function handleVideoSignal({ signal, peerId }) {
+      if (!peers[peerId]) {
+        const peer = new SimplePeer({
+          initiator: false,
+          trickle: false,
+          stream: localStream,
+        });
+
+        peer.on("signal", (signal) => {
+          socket.emit("video-signal", { signal, peerId });
+        });
+
+        peer.on("stream", (stream) => {
+          addRemoteVideo(peerId, stream);
+        });
+
+        peers[peerId] = peer;
+      }
+      peers[peerId].signal(signal);
+    }
+
+    function addRemoteVideo(peerId, stream) {
+      const remoteVideo = document.createElement("video");
+      remoteVideo.srcObject = stream;
+      remoteVideo.autoplay = true;
+      remoteVideo.setAttribute("data-peer-id", peerId);
+      videoContainer.appendChild(remoteVideo);
+    }
+
+    function handleUserStoppedVideo({ username }) {
+      const videos = document.querySelectorAll("video");
+      videos.forEach((video) => {
+        if (video.srcObject && video.srcObject.getVideoTracks().length) {
+          const peerId = video.getAttribute("data-peer-id");
+          if (peerId && peers[peerId]) {
+            peers[peerId].destroy();
+            delete peers[peerId];
+            video.remove();
+          }
+        }
+      });
+    }
+
+    socket.on("user-disconnected", ({ peerId }) => {
+      const video = document.querySelector(`[data-peer-id="${peerId}"]`);
+      if (video) video.remove();
+      if (peers[peerId]) {
+        peers[peerId].destroy();
+        delete peers[peerId];
+      }
+    });
+
+    window.addEventListener("beforeunload", () => {
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+      socket.emit("leave", { username, room });
+    });
+
+    // Whiteboard functionality
+    whiteboard.addEventListener("mousedown", (e) => {
+      drawing = true;
+      ctx.moveTo(e.offsetX, e.offsetY);
+      ctx.strokeStyle = currentColor; // Set stroke color
+    });
+
+    whiteboard.addEventListener("mousemove", (e) => {
+      if (drawing) {
+        ctx.lineTo(e.offsetX, e.offsetY);
+        ctx.stroke();
+        socket.emit("drawing", { offsetX: e.offsetX, offsetY: e.offsetY, room, color: currentColor });
+      }
+    });
+
+    whiteboard.addEventListener("mouseup", () => {
+      drawing = false;
+      ctx.beginPath();
+    });
+
+    whiteboard.addEventListener("mouseout", () => {
+      drawing = false;
+      ctx.beginPath();
+    });
+
+    clearBoardButton.addEventListener("click", () => {
+      ctx.clearRect(0, 0, whiteboard.width, whiteboard.height);
+      socket.emit("clear-board", { room });
+    });
+
+    colorPicker.addEventListener("input", (e) => {
+      currentColor = e.target.value;
+    });
+
+    // Listen for drawing events from other users
+    socket.on("drawing", ({ offsetX, offsetY, color }) => {
+      ctx.strokeStyle = color;
+      ctx.lineTo(offsetX, offsetY);
+      ctx.stroke();
+    });
+
+    // Listen for clear board events from other users
+    socket.on("clear-board", () => {
+      ctx.clearRect(0, 0, whiteboard.width, whiteboard.height);
+    });
+
+    // Emit the initial drawing event to clear the board for everyone
+    socket.on("connect", () => {
+      socket.emit("clear-board", { room });
+    });
+  </script>
+</body>
+</html>
